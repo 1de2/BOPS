@@ -2,149 +2,161 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from backtesting import Backtest, Strategy
-from backtesting.lib import crossover
 import yfinance as yf
-import plotly.graph_objects as go
 from datetime import datetime
+import plotly.graph_objects as go
 
 # Configuración de la página
-st.set_page_config(page_title="BOPS Backtesting", layout="wide")
-st.title("📊 Backtesting Automatizado para Estrategia BOPS")
+st.set_page_config(
+    page_title="BOPS Pro Backtester",
+    page_icon="📈",
+    layout="wide"
+)
 
-# 1. Panel de Control
+# Título y descripción
+st.title("🚀 BOPS Strategy Backtester")
+st.markdown("""
+Backtesting automatizado para la estrategia BOPS con datos de mercado en tiempo real.
+""")
+
+# Sidebar con controles
 with st.sidebar:
-    st.header("Configuración del Backtest")
+    st.header("⚙️ Configuración")
     
-    # Selección de activo y timeframe
-    asset = st.selectbox("Activo", ["MNQ=F", "MES=F", "YM=F"], index=0)
-    timeframe = st.selectbox("Timeframe", ["15m", "30m", "1h", "4h", "1d"], index=2)
+    # Selector de activo y timeframe
+    asset = st.selectbox(
+        "Seleccionar Activo",
+        ["MNQ=F", "MES=F", "YM=F"],
+        index=0
+    )
     
-    # Parámetros de la estrategia
-    st.subheader("Parámetros BOPS")
-    tickq_extremo_alto = st.number_input("Nivel TICKQ Alto", value=1000, min_value=500, max_value=1500)
-    tickq_extremo_bajo = st.number_input("Nivel TICKQ Bajo", value=-1000, min_value=-1500, max_value=-500)
+    timeframe_map = {
+        "15 Minutos": "15m",
+        "1 Hora": "1h",
+        "4 Horas": "4h",
+        "1 Día": "1d"
+    }
+    timeframe = st.selectbox(
+        "Intervalo Temporal",
+        list(timeframe_map.keys()),
+        index=1
+    )
+    
+    # Parámetros de estrategia
+    st.subheader("📊 Parámetros BOPS")
+    tick_high = st.slider("Umbral TICKQ Alto", 800, 1500, 1000)
+    tick_low = st.slider("Umbral TICKQ Bajo", -1500, -800, -1000)
+    
+    # Gestión de riesgo
+    st.subheader("🛡️ Gestión de Riesgo")
+    tp = st.number_input("Take Profit (%)", 0.5, 10.0, 1.5, 0.1)
+    sl = st.number_input("Stop Loss (%)", 0.1, 5.0, 0.75, 0.05)
     
     # Rango de fechas
-    today = datetime.today()
-    start_date = st.date_input("Fecha inicio", value=pd.to_datetime('2023-01-01'), max_value=today)
-    end_date = st.date_input("Fecha fin", value=today, max_value=today)
-    
-    # Configuración de riesgo
-    st.subheader("Gestión de Riesgo")
-    tp_percent = st.number_input("Take Profit (%)", value=1.5, min_value=0.1, max_value=10.0, step=0.1)
-    sl_percent = st.number_input("Stop Loss (%)", value=0.75, min_value=0.1, max_value=5.0, step=0.1)
-    
-    # Ejecutar backtest
-    run_backtest = st.button("Ejecutar Backtest")
+    st.subheader("📅 Rango de Backtesting")
+    start_date = st.date_input(
+        "Fecha de inicio",
+        datetime(2023, 1, 1),
+        max_value=datetime.today()
+    )
+    end_date = st.date_input(
+        "Fecha de fin",
+        datetime.today(),
+        max_value=datetime.today()
+    )
 
-# 2. Clase de Estrategia Adaptada
-class BopsStrategy(Strategy):
+# Clase de estrategia optimizada
+class OptimizedBopsStrategy(Strategy):
     def init(self):
-        # Pre-cálculo de indicadores
-        self.sma20 = self.I(SMA, self.data.Close, 20)
-        self.prev_high = self.I(pd.Series, self.data.High.resample('D').last().shift(1))
-        self.prev_low = self.I(pd.Series, self.data.Low.resample('D').last().shift(1))
+        close = self.data.Close
+        self.sma20 = self.I(SMA, close, 20)
+        self.atr = self.I(ATR, self.data.HLC, 14)
         
     def next(self):
-        # Simulación de datos TICKQ (en producción usar API real)
-        current_tickq = np.random.randint(-1500, 1500)
+        # Simulación de datos de mercado
+        current_tick = np.random.normal(0, 500)
+        vol_spread = self.data.Volume[-1] - self.data.Volume.rolling(20).mean()[-1]
         
-        # Condiciones de entrada (adaptadas del Pine Script original)
-        bull_condition = (current_tickq <= self.tickq_extremo_bajo and 
-                        self.data.Close[-1] > self.data.Open[-1] and
-                        self.data.Volume[-1] > self.data.Volume.rolling(20).mean()[-1])
+        # Condiciones de entrada
+        long_cond = (
+            current_tick <= self.params.tick_low and
+            vol_spread > 0 and
+            crossover(self.data.Close, self.sma20)
+        )
         
-        bear_condition = (current_tickq >= self.tickq_extremo_alto and 
-                        self.data.Close[-1] < self.data.Open[-1] and
-                        self.data.Volume[-1] > self.data.Volume.rolling(20).mean()[-1])
+        short_cond = (
+            current_tick >= self.params.tick_high and
+            vol_spread < 0 and
+            crossunder(self.data.Close, self.sma20)
+        )
         
         # Gestión de posiciones
-        if bull_condition and not self.position.is_long:
-            self.buy(sl=self.data.Close[-1]*(1-self.sl_percent/100),
-                    tp=self.data.Close[-1]*(1+self.tp_percent/100))
+        price = self.data.Close[-1]
+        if long_cond and not self.position.is_long:
+            self.buy(
+                sl=price * (1 - self.params.sl/100),
+                tp=price * (1 + self.params.tp/100)
+            )
             
-        elif bear_condition and not self.position.is_short:
-            self.sell(sl=self.data.Close[-1]*(1+self.sl_percent/100),
-                     tp=self.data.Close[-1]*(1-self.tp_percent/100))
+        elif short_cond and not self.position.is_short:
+            self.sell(
+                sl=price * (1 + self.params.sl/100),
+                tp=price * (1 - self.params.tp/100)
+            )
 
-# 3. Carga de Datos
-@st.cache_data
-def load_data(ticker, start, end, interval):
-    data = yf.download(ticker, start=start, end=end, interval=interval)
-    return data
+# Carga de datos con caché
+@st.cache_data(ttl=3600)
+def load_market_data(ticker, start, end, interval):
+    try:
+        data = yf.download(ticker, start=start, end=end, interval=interval)
+        if data.empty:
+            st.error("⚠️ No se encontraron datos. Prueba con otro rango de fechas.")
+            return None
+        return data
+    except Exception as e:
+        st.error(f"Error al cargar datos: {str(e)}")
+        return None
 
-# 4. Ejecución del Backtest
-if run_backtest:
-    st.write(f"## 🔍 Analizando {asset} ({timeframe}) desde {start_date} hasta {end_date}")
+# Ejecución principal
+if st.sidebar.button("▶️ Ejecutar Backtest"):
+    st.write(f"## 📊 Resultados para {asset} ({timeframe})")
     
     with st.spinner("Cargando datos y ejecutando backtest..."):
-        try:
-            # Cargar datos
-            data = load_data(asset, start_date, end_date, timeframe)
+        data = load_market_data(
+            asset,
+            start_date,
+            end_date,
+            timeframe_map[timeframe]
+        )
+        
+        if data is not None:
+            bt = Backtest(
+                data,
+                OptimizedBopsStrategy,
+                commission=.0002,
+                margin=1.0,
+                exclusive_orders=True
+            )
             
-            if data.empty:
-                st.error("No se encontraron datos para este rango. Prueba con otras fechas.")
-            else:
-                # Configurar estrategia
-                bt = Backtest(data, BopsStrategy, commission=.0002, margin=1.0)
-                
-                # Ejecutar backtest con parámetros
-                stats = bt.run(
-                    tickq_extremo_alto=tickq_extremo_alto,
-                    tickq_extremo_bajo=tickq_extremo_bajo,
-                    sl_percent=sl_percent,
-                    tp_percent=tp_percent
-                )
-                
-                # Mostrar resultados
-                st.success("Backtest completado exitosamente!")
-                
-                # Métricas clave
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Retorno Total", f"{stats['Return [%]']:.2f}%")
-                col2.metric("Sharpe Ratio", f"{stats['Sharpe Ratio']:.2f}")
-                col3.metric("Win Rate", f"{stats['Win Rate [%]']:.2f}%")
-                
-                # Gráfico de equity
-                st.write("### 📈 Curva de Equity")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=stats._equity_curve.index,
-                    y=stats._equity_curve['Equity'],
-                    mode='lines',
-                    name='Equity'
-                ))
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Datos detallados
-                st.write("### 📊 Estadísticas Detalladas")
+            stats = bt.run(
+                tick_high=tick_high,
+                tick_low=tick_low,
+                tp=tp,
+                sl=sl
+            )
+            
+            # Mostrar métricas clave
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Retorno Total", f"{stats['Return [%]']:.2f}%")
+            col2.metric("Ratio Sharpe", f"{stats['Sharpe Ratio']:.2f}")
+            col3.metric("Operaciones", stats['# Trades'])
+            
+            # Gráfico interactivo
+            st.plotly_chart(
+                bt.plot(resample=False),
+                use_container_width=True
+            )
+            
+            # Resultados detallados
+            with st.expander("📝 Ver estadísticas completas"):
                 st.dataframe(stats)
-                
-                # Exportar resultados
-                csv = stats._strategy._equity_curve.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="Descargar Resultados",
-                    data=csv,
-                    file_name=f"backtest_results_{asset}_{start_date}_{end_date}.csv",
-                    mime='text/csv'
-                )
-                
-        except Exception as e:
-            st.error(f"Error durante el backtest: {str(e)}")
-
-# 5. Explicación de la Estrategia
-with st.expander("ℹ️ Cómo funciona esta estrategia"):
-    st.write("""
-    Esta implementación adapta la estrategia BOPS original para backtesting con:
-    
-    - **Señales basadas en TICKQ simulado** (en producción conectar a datos reales)
-    - **Filtros de volumen y precio** similares al Pine Script original
-    - **Gestión de riesgo** con TP/SL porcentual
-    
-    Parámetros clave:
-    - `TICKQ Extremo Alto`: Nivel para señales cortas
-    - `TICKQ Extremo Bajo`: Nivel para señales largas
-    - `Horario RTH`: 9:30-16:00 NY (implementado internamente)
-    """)
-
-# Nota: Para producción, reemplazar la simulación de TICKQ con API real
